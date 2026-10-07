@@ -9,8 +9,10 @@ const path = require('path');
 const multer = require('multer');
 const twilio = require('twilio');
 const { initializeApp } = require('firebase/app');
-const { getDatabase, ref, get, update, set, runTransaction } = require('firebase/database');
+const { getDatabase, ref, get, update, set, runTransaction, query, orderByChild, startAt } = require('firebase/database');
 
+
+app.set('trust proxy', 1);
 // ============================================================
 // 🔥 FIREBASE
 // ============================================================
@@ -36,7 +38,7 @@ app.use(express.json());
 // 🔐 KONFIGURASI (ISI DI FILE .env)
 // ============================================================
 const {
-    TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, ADMIN_TOKEN
+    TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN,
 } = process.env;
 
 const clientId = process.env.LINKQU_CLIENT_ID || "5f5aa496-7e16-4ca1-9967-33c768dac6c7";
@@ -52,6 +54,7 @@ const TWILIO_CUSTOMER_SID = process.env.TWILIO_CUSTOMER_CONTENT_SID || "HXd8e11e
 const TWILIO_ADMIN_SID = process.env.TWILIO_ADMIN_CONTENT_SID || "HX105b7c03b6cca5944322f01b837448ee";
 const BASE_URL = "https://catur.siappgo.id";
 const EVENT_NAME = "TURNAMEN CATUR 2026";
+const ADMIN_TOKEN = "0g6rdM2kOSY9Aq0YzPp1U2SUGVLFXbl3"
 
 // ============================================================
 // 📦 PAKET (harga dihitung di server, bukan dari frontend)
@@ -87,13 +90,79 @@ app.post('/upload-ktp', uploadKtp.single('ktp'), (req, res) => {
     res.json({ file: req.file.filename });
 });
 
-// Admin melihat KTP:  GET /admin/ktp/<file>   header: x-admin-token: <ADMIN_TOKEN>
-app.get('/admin/ktp/:file', (req, res) => {
-    if (!ADMIN_TOKEN || req.headers['x-admin-token'] !== ADMIN_TOKEN) return res.status(403).send('Forbidden');
+const adminFails = new Map(); // ip -> { n, t }
+
+function adminAuth(req, res, next) {
+    const ip = req.ip;
+    const f = adminFails.get(ip) || { n: 0, t: Date.now() };
+    if (Date.now() - f.t > 15 * 60 * 1000) { f.n = 0; f.t = Date.now(); }
+    if (f.n >= 10) return res.status(429).json({ error: 'Terlalu banyak percobaan. Coba lagi 15 menit lagi.' });
+
+    const given = Buffer.from(String(req.headers['x-admin-token'] || ''));
+    const real = Buffer.from(String(ADMIN_TOKEN || ''));
+    const ok = real.length > 0 && given.length === real.length && crypto.timingSafeEqual(given, real);
+    if (!ok) {
+        f.n++; adminFails.set(ip, f);
+        return res.status(403).json({ error: 'Token salah' });
+    }
+    adminFails.delete(ip);
+    next();
+}
+
+// Halaman admin (HTML statis; data tetap butuh token)
+app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'admin.html')));
+
+// Foto KTP
+app.get('/admin/ktp/:file', adminAuth, (req, res) => {
     const file = path.join(KTP_DIR, path.basename(req.params.file));
-    if (!fs.existsSync(file)) return res.status(404).send('Not found');
+    if (!fs.existsSync(file)) return res.status(404).json({ error: 'Not found' });
     res.sendFile(file);
 });
+
+// Daftar pendaftar (VA + QRIS), hanya transaksi turnamen catur
+app.get('/admin/registrations', adminAuth, async (req, res) => {
+    try {
+        // inquiry_va / inquiry_qris dipakai bersama aplikasi lain → ambil yang punya package_id saja
+        const q = col => get(query(ref(databaseFire, col), orderByChild('package_id'), startAt('')));
+        const [va, qr] = await Promise.all([q('inquiry_va'), q('inquiry_qris')]);
+
+        const rows = [];
+        const collect = (snap, source) => {
+            if (!snap.exists()) return;
+            const all = snap.val();
+            for (const key of Object.keys(all)) {
+                const r = all[key];
+                if (!r || !r.package_id) continue;
+                rows.push({
+                    invoice: r.partner_reff || key,
+                    source,
+                    status: r.status || 'PENDING',
+                    created_at: r.created_at || null,
+                    paid_at: r.paid_at || null,
+                    amount: Number(r.amount) || 0,
+                    method: source === 'qris' ? 'QRIS' : `VA ${r.bank_code || ''}`.trim(),
+                    va_number: r.va_number || null,
+                    bank_ref: r.bank_ref || null,
+                    package_id: r.package_id,
+                    package_name: r.package_name || r.package_id,
+                    phone: r.customer_phone || null,
+                    customer_name: r.customer_name || null,
+                    ktp_file: r.ktp_file || null,
+                    participants: Array.isArray(r.participants) ? r.participants : []
+                });
+            }
+        };
+        collect(va, 'va');
+        collect(qr, 'qris');
+
+        rows.sort((a, b) => new Date(b.paid_at || b.created_at) - new Date(a.paid_at || a.created_at));
+        res.json({ generated_at: new Date().toISOString(), rows });
+    } catch (err) {
+        console.error('❌ /admin/registrations:', err.message);
+        res.status(500).json({ error: 'Gagal mengambil data' });
+    }
+});
+
 
 // ============================================================
 // 🛡️ HELPER
