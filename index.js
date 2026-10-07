@@ -36,11 +36,14 @@ app.use(express.json());
 // 🔐 KONFIGURASI (ISI DI FILE .env)
 // ============================================================
 const {
-    TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN,
-    LINKQU_CLIENT_ID: clientId, LINKQU_CLIENT_SECRET: clientSecret,
-    LINKQU_USERNAME: username, LINKQU_PIN: pin, LINKQU_SERVER_KEY: serverKey,
-    ADMIN_TOKEN
+    TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, ADMIN_TOKEN
 } = process.env;
+
+const clientId = process.env.LINKQU_CLIENT_ID || "testing";
+const clientSecret = process.env.LINKQU_CLIENT_SECRET || "123";
+const username = process.env.LINKQU_USERNAME || "LI307GXIN";
+const pin = process.env.LINKQU_PIN || "5m6uYAScSxQtCmU";
+const serverKey = process.env.LINKQU_SERVER_KEY || "QtwGEr997XDcmMb1Pq8S5X1N";
 
 const client = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 const ADMIN_WHATSAPP = process.env.ADMIN_WHATSAPP || "+6281347423599";
