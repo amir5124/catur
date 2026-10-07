@@ -39,9 +39,9 @@ const {
     TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, ADMIN_TOKEN
 } = process.env;
 
-const clientId = process.env.LINKQU_CLIENT_ID || "testing";
-const clientSecret = process.env.LINKQU_CLIENT_SECRET || "123";
-const username = process.env.LINKQU_USERNAME || "LI307GXIN";
+const clientId = process.env.LINKQU_CLIENT_ID || "5f5aa496-7e16-4ca1-9967-33c768dac6c7";
+const clientSecret = process.env.LINKQU_CLIENT_SECRET || "TM1rVhfaFm5YJxKruHo0nWMWC";
+const username = process.env.LINKQU_USERNAME || "LI9019VKS";
 const pin = process.env.LINKQU_PIN || "5m6uYAScSxQtCmU";
 const serverKey = process.env.LINKQU_SERVER_KEY || "QtwGEr997XDcmMb1Pq8S5X1N";
 
@@ -57,7 +57,7 @@ const EVENT_NAME = "TURNAMEN CATUR 2026";
 // 📦 PAKET (harga dihitung di server, bukan dari frontend)
 // ============================================================
 const PACKAGES = {
-    early: { label: 'Early Bird + Jersey', price: 150000, pax: 1, quota: 50 },
+    early: { label: 'Early Bird + Jersey', price: 100, pax: 1, quota: 50 },
     reguler: { label: 'Reguler + Jersey', price: 200000, pax: 1, quota: 100 },
     paket5: { label: 'Paket 5 Orang', price: 350000, pax: 5, quota: null },
     nojersey: { label: 'Reguler Tanpa Jersey', price: 150000, pax: 1, quota: null }
@@ -172,7 +172,7 @@ app.post('/create-va', async (req, res) => {
         };
 
         const response = await axios.post(
-            'https://gateway-dev.linkqu.id/linkqu-partner/transaction/create/va', payload,
+            'https://api.linkqu.id/linkqu-partner/transaction/create/va', payload,
             { headers: { 'client-id': clientId, 'client-secret': clientSecret } }
         );
         const result = response.data;
@@ -219,7 +219,7 @@ app.post('/create-qris', async (req, res) => {
         };
 
         const response = await axios.post(
-            'https://gateway-dev.linkqu.id/linkqu-partner/transaction/create/qris', payload,
+            'https://api.linkqu.id/linkqu-partner/transaction/create/qris', payload,
             { headers: { 'client-id': clientId, 'client-secret': clientSecret } }
         );
         const result = response.data;
@@ -368,7 +368,7 @@ app.post("/callback", async (req, res) => {
 // ============================================================
 app.get('/check-status/:partnerReff', async (req, res) => {
     try {
-        const r = await axios.get(`https://gateway-dev.linkqu.id/linkqu-partner/transaction/payment/checkstatus`, {
+        const r = await axios.get(`https://api.linkqu.id/linkqu-partner/transaction/payment/checkstatus`, {
             params: { username, partnerreff: req.params.partnerReff },
             headers: { 'client-id': clientId, 'client-secret': clientSecret }
         });
