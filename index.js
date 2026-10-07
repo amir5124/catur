@@ -1,4 +1,4 @@
-require('dotenv').config(); // HARUS paling atas
+require('dotenv').config({ path: require('path').join(__dirname, '.env') }); // HARUS paling atas
 const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
@@ -9,10 +9,8 @@ const path = require('path');
 const multer = require('multer');
 const twilio = require('twilio');
 const { initializeApp } = require('firebase/app');
-const { getDatabase, ref, get, update, set, runTransaction, query, orderByChild, startAt } = require('firebase/database');
+const { getDatabase, ref, get, update, set, runTransaction } = require('firebase/database');
 
-
-app.set('trust proxy', 1);
 // ============================================================
 // 🔥 FIREBASE
 // ============================================================
@@ -31,36 +29,41 @@ const databaseFire = getDatabase(FIREBASE);
 // ⚙️ EXPRESS
 // ============================================================
 const app = express();
+app.set('trust proxy', 1); // setelah `const app`, bukan sebelumnya
 app.use(cors());
 app.use(express.json());
 
 // ============================================================
-// 🔐 KONFIGURASI (ISI DI FILE .env)
+// 🔐 KONFIGURASI (.env)
 // ============================================================
-const {
-    TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN,
-} = process.env;
+const { TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN } = process.env;
+if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
+    console.error('❌ TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN belum diisi di .env');
+    console.error(`   Lokasi .env yang dicari: ${path.join(__dirname, '.env')}`);
+    process.exit(1);
+}
 
 const clientId = process.env.LINKQU_CLIENT_ID || "5f5aa496-7e16-4ca1-9967-33c768dac6c7";
 const clientSecret = process.env.LINKQU_CLIENT_SECRET || "TM1rVhfaFm5YJxKruHo0nWMWC";
 const username = process.env.LINKQU_USERNAME || "LI9019VKS";
 const pin = process.env.LINKQU_PIN || "5m6uYAScSxQtCmU";
 const serverKey = process.env.LINKQU_SERVER_KEY || "QtwGEr997XDcmMb1Pq8S5X1N";
+const LINKQU_HOST = (process.env.LINKQU_BASE_URL || "https://api.linkqu.id").replace(/\/$/, "");
 
 const client = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 const ADMIN_WHATSAPP = process.env.ADMIN_WHATSAPP || "+6281347423599";
 const TWILIO_WA_FROM = process.env.TWILIO_WA_FROM || "whatsapp:+62882005447472";
 const TWILIO_CUSTOMER_SID = process.env.TWILIO_CUSTOMER_CONTENT_SID || "HXd8e11e651ea3e0e4da3fe6ca604f9dab";
 const TWILIO_ADMIN_SID = process.env.TWILIO_ADMIN_CONTENT_SID || "HX105b7c03b6cca5944322f01b837448ee";
-const BASE_URL = "https://catur.siappgo.id";
+const BASE_URL = (process.env.PUBLIC_URL || "https://catur.siappgo.id").replace(/\/$/, "");
 const EVENT_NAME = "TURNAMEN CATUR 2026";
-const ADMIN_TOKEN = "0g6rdM2kOSY9Aq0YzPp1U2SUGVLFXbl3"
 
 // ============================================================
 // 📦 PAKET (harga dihitung di server, bukan dari frontend)
+// Mode tes Early Bird: isi EARLY_PRICE=100 di .env (samakan dengan EARLY_PRICE di frontend)
 // ============================================================
 const PACKAGES = {
-    early: { label: 'Early Bird + Jersey', price: 100, pax: 1, quota: 50 },
+    early: { label: 'Early Bird + Jersey', price: Number(process.env.EARLY_PRICE) || 150000, pax: 1, quota: 50 },
     reguler: { label: 'Reguler + Jersey', price: 200000, pax: 1, quota: 100 },
     paket5: { label: 'Paket 5 Orang', price: 350000, pax: 5, quota: null },
     nojersey: { label: 'Reguler Tanpa Jersey', price: 150000, pax: 1, quota: null }
@@ -90,74 +93,34 @@ app.post('/upload-ktp', uploadKtp.single('ktp'), (req, res) => {
     res.json({ file: req.file.filename });
 });
 
+// ============================================================
+// 🖥️ HALAMAN ADMIN (HTML statis; data dibaca admin.html langsung dari Firebase)
+// Akses: https://catur.siappgo.id/admin/<ADMIN_KEY>   (ADMIN_KEY di .env, min. 16 karakter)
+// ============================================================
 const adminFails = new Map(); // ip -> { n, t }
 
 function adminKey(req, res, next) {
     const ip = req.ip;
     const f = adminFails.get(ip) || { n: 0, t: Date.now() };
     if (Date.now() - f.t > 15 * 60 * 1000) { f.n = 0; f.t = Date.now(); }
-    if (f.n >= 10) return res.status(429).json({ error: 'Terlalu banyak percobaan' });
+    if (f.n >= 10) return res.status(429).send('Terlalu banyak percobaan');
 
     const real = Buffer.from(String(process.env.ADMIN_KEY || ''));
     const given = Buffer.from(String(req.params.key || ''));
     const ok = real.length >= 16 && given.length === real.length && crypto.timingSafeEqual(given, real);
     if (!ok) {
         f.n++; adminFails.set(ip, f);
-        return res.status(404).send('Not found'); // pura-pura tidak ada
+        return res.status(404).send('Not found');
     }
     next();
 }
 
-// Halaman (HTML statis)
 app.get('/admin/:key', adminKey, (req, res) => {
     res.setHeader('X-Robots-Tag', 'noindex, nofollow');
     res.setHeader('Cache-Control', 'no-store');
-    res.setHeader('Referrer-Policy', 'no-referrer'); // kunci di URL jangan bocor lewat referrer
+    res.setHeader('Referrer-Policy', 'no-referrer');
     res.sendFile(path.join(__dirname, 'admin.html'));
 });
-
-// Data pendaftar (VA + QRIS), hanya transaksi turnamen catur
-app.get('/admin-data/:key/registrations', adminKey, async (req, res) => {
-    try {
-        // inquiry_va / inquiry_qris dipakai bersama aplikasi lain → ambil yang punya package_id saja
-        const q = col => get(query(ref(databaseFire, col), orderByChild('package_id'), startAt('')));
-        const [va, qr] = await Promise.all([q('inquiry_va'), q('inquiry_qris')]);
-
-        const rows = [];
-        const collect = (snap, source) => {
-            if (!snap.exists()) return;
-            const all = snap.val();
-            for (const key of Object.keys(all)) {
-                const r = all[key];
-                if (!r || !r.package_id) continue;
-                rows.push({
-                    invoice: r.partner_reff || key,
-                    status: r.status || 'PENDING',
-                    created_at: r.created_at || null,
-                    paid_at: r.paid_at || null,
-                    amount: Number(r.amount) || 0,
-                    method: source === 'qris' ? 'QRIS' : `VA ${r.bank_code || ''}`.trim(),
-                    va_number: r.va_number || null,
-                    bank_ref: r.bank_ref || null,
-                    package_name: r.package_name || r.package_id,
-                    phone: r.customer_phone || null,
-                    customer_name: r.customer_name || null,
-                    participants: Array.isArray(r.participants) ? r.participants : []
-                });
-            }
-        };
-        collect(va, 'va');
-        collect(qr, 'qris');
-
-        rows.sort((a, b) => new Date(b.paid_at || b.created_at) - new Date(a.paid_at || a.created_at));
-        res.setHeader('Cache-Control', 'no-store');
-        res.json({ generated_at: new Date().toISOString(), rows });
-    } catch (err) {
-        console.error('❌ /admin-data:', err.message);
-        res.status(500).json({ error: 'Gagal mengambil data' });
-    }
-});
-
 
 // ============================================================
 // 🛡️ HELPER
@@ -179,6 +142,29 @@ const generatePartnerReff = () => `INV-CATUR-${Date.now()}-${crypto.randomBytes(
 function makeSignature(pathUrl, parts) {
     const cleaned = parts.join('').replace(/[^0-9a-zA-Z]/g, "").toLowerCase();
     return crypto.createHmac("sha256", serverKey).update(pathUrl + 'POST' + cleaned).digest("hex");
+}
+
+// Salinan ringan untuk web admin (tanpa response_raw & gambar QR)
+async function saveRegistry(partner_reff, source, d) {
+    try {
+        await set(ref(databaseFire, `catur_registrations/${partner_reff}`), {
+            partner_reff,
+            source,                                   // 'va' | 'qris'
+            status: 'PENDING',
+            created_at: d.created_at,
+            amount: Number(d.amount) || 0,
+            method: source === 'qris' ? 'QRIS' : `VA ${d.bank_code || ''}`.trim(),
+            va_number: d.va_number || null,
+            package_id: d.package_id,
+            package_name: d.package_name,
+            phone: d.customer_phone || null,
+            customer_name: d.customer_name || null,
+            participants: d.participants || [],
+            ktp_file: d.ktp_file || null
+        });
+    } catch (e) {
+        console.error('⚠️ saveRegistry gagal:', e.message); // jangan gagalkan pembayaran
+    }
 }
 
 // Validasi + pisahkan data turnamen dari body yang diteruskan ke LinkQu
@@ -236,23 +222,31 @@ app.post('/create-va', async (req, res) => {
         };
 
         const response = await axios.post(
-            'https://api.linkqu.id/linkqu-partner/transaction/create/va', payload,
+            `${LINKQU_HOST}/linkqu-partner/transaction/create/va`, payload,
             { headers: { 'client-id': clientId, 'client-secret': clientSecret } }
         );
         const result = response.data;
+        const createdAt = new Date().toISOString();
 
         await set(ref(databaseFire, `inquiry_va/${partner_reff}`), {
             partner_reff, customer_id: customerId, customer_name: customerName,
             amount: body.amount, bank_code: result?.bank_name || null, expired,
             customer_phone: customerPhone, customer_email: customerEmail,
             va_number: result?.virtual_account || null, response_raw: result,
-            created_at: new Date().toISOString(), status: "PENDING",
+            created_at: createdAt, status: "PENDING",
             date: body.date || "-", name: EVENT_NAME, note: body.note || "", pax: body.pax,
             ...meta
         });
+
+        await saveRegistry(partner_reff, 'va', {
+            created_at: createdAt, amount: body.amount, bank_code: result?.bank_name || null,
+            va_number: result?.virtual_account || null,
+            customer_phone: customerPhone, customer_name: customerName, ...meta
+        });
+
         res.json(result);
     } catch (err) {
-        console.error('❌ Gagal membuat VA:', err.message);
+        console.error('❌ Gagal membuat VA:', err.message, err.response?.status || '', err.response?.data ? JSON.stringify(err.response.data) : '');
         res.status(errStatus(err)).json({ error: err.message, detail: err.response?.data || null });
     }
 });
@@ -283,10 +277,11 @@ app.post('/create-qris', async (req, res) => {
         };
 
         const response = await axios.post(
-            'https://api.linkqu.id/linkqu-partner/transaction/create/qris', payload,
+            `${LINKQU_HOST}/linkqu-partner/transaction/create/qris`, payload,
             { headers: { 'client-id': clientId, 'client-secret': clientSecret } }
         );
         const result = response.data;
+        const createdAt = new Date().toISOString();
 
         let qrisBase64 = null;
         if (result?.imageqris) {
@@ -300,13 +295,19 @@ app.post('/create-qris', async (req, res) => {
             partner_reff, customer_id: customerId, customer_name: customerName,
             amount: body.amount, expired, customer_phone: customerPhone, customer_email: customerEmail,
             qris_url: result?.imageqris || null, qris_image_base64: qrisBase64,
-            response_raw: result, created_at: new Date().toISOString(), status: "PENDING",
+            response_raw: result, created_at: createdAt, status: "PENDING",
             date: body.date || "-", name: EVENT_NAME, note: body.note || "", pax: body.pax,
             ...meta
         });
+
+        await saveRegistry(partner_reff, 'qris', {
+            created_at: createdAt, amount: body.amount,
+            customer_phone: customerPhone, customer_name: customerName, ...meta
+        });
+
         res.json(result);
     } catch (err) {
-        console.error('❌ Gagal membuat QRIS:', err.message);
+        console.error('❌ Gagal membuat QRIS:', err.message, err.response?.status || '', err.response?.data ? JSON.stringify(err.response.data) : '');
         res.status(errStatus(err)).json({ error: err.message, detail: err.response?.data || null });
     }
 });
@@ -352,7 +353,7 @@ function formatToWhatsAppNumber(n) {
 }
 
 async function sendWA(to, contentSid, variables) {
-    if (!contentSid) return console.error('❌ Content SID Twilio belum diisi di .env');
+    if (!contentSid) return console.error('❌ Content SID Twilio belum diisi');
     try {
         const r = await client.messages.create({
             from: TWILIO_WA_FROM,
@@ -402,7 +403,7 @@ async function addBalance(partner_reff, va_code, serialnumber) {
 }
 
 // ============================================================
-// ✅ CALLBACK LINKQU (selalu balas 200, WA di background)
+// ✅ CALLBACK LINKQU (selalu balas 200, proses lanjutan di background)
 // ============================================================
 app.post("/callback", async (req, res) => {
     const { partner_reff, va_code, serialnumber } = req.body;
@@ -419,6 +420,14 @@ app.post("/callback", async (req, res) => {
 
         if (!result.committed) return res.status(200).json({ status: "SUCCESS", message: "Sudah diproses" });
 
+        // Catat waktu bayar + Ref Bank untuk web admin
+        update(ref(databaseFire, `catur_registrations/${partner_reff}`), {
+            status: 'SUKSES',
+            paid_at: new Date().toISOString(),
+            bank_ref: serialnumber ? String(serialnumber) : null,
+            va_code: va_code ? String(va_code) : null
+        }).catch(e => console.error('⚠️ update registry:', e.message));
+
         addBalance(partner_reff, va_code, serialnumber).catch(e => console.error("⚠️ addBalance:", e.message));
         return res.status(200).json({ status: "SUCCESS", message: "Pembayaran berhasil dicatat" });
     } catch (err) {
@@ -432,7 +441,7 @@ app.post("/callback", async (req, res) => {
 // ============================================================
 app.get('/check-status/:partnerReff', async (req, res) => {
     try {
-        const r = await axios.get(`https://api.linkqu.id/linkqu-partner/transaction/payment/checkstatus`, {
+        const r = await axios.get(`${LINKQU_HOST}/linkqu-partner/transaction/payment/checkstatus`, {
             params: { username, partnerreff: req.params.partnerReff },
             headers: { 'client-id': clientId, 'client-secret': clientSecret }
         });
@@ -462,7 +471,7 @@ app.get('/check-local-status/:partnerReff', async (req, res) => {
 });
 
 // ============================================================
-// 📊 SISA KUOTA (opsional, untuk ditampilkan di frontend)
+// 📊 SISA KUOTA (dipakai halaman pendaftaran)
 // ============================================================
 app.get('/catur-quota', async (req, res) => {
     try {
@@ -470,7 +479,8 @@ app.get('/catur-quota', async (req, res) => {
         for (const [id, p] of Object.entries(PACKAGES)) {
             if (!p.quota) continue;
             const s = await get(ref(databaseFire, `catur_quota/${id}`));
-            out[id] = { quota: p.quota, terisi: s.exists() ? s.val() : 0, sisa: p.quota - (s.exists() ? s.val() : 0) };
+            const terisi = s.exists() ? s.val() : 0;
+            out[id] = { quota: p.quota, terisi, sisa: p.quota - terisi };
         }
         res.json(out);
     } catch (err) {
@@ -482,4 +492,4 @@ app.get('/catur-quota', async (req, res) => {
 // 🚀 START
 // ============================================================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Server berjalan di port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Server berjalan di port ${PORT} | LinkQu: ${LINKQU_HOST} | Callback: ${BASE_URL}/callback`));
