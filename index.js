@@ -92,35 +92,32 @@ app.post('/upload-ktp', uploadKtp.single('ktp'), (req, res) => {
 
 const adminFails = new Map(); // ip -> { n, t }
 
-function adminAuth(req, res, next) {
+function adminKey(req, res, next) {
     const ip = req.ip;
     const f = adminFails.get(ip) || { n: 0, t: Date.now() };
     if (Date.now() - f.t > 15 * 60 * 1000) { f.n = 0; f.t = Date.now(); }
-    if (f.n >= 10) return res.status(429).json({ error: 'Terlalu banyak percobaan. Coba lagi 15 menit lagi.' });
+    if (f.n >= 10) return res.status(429).json({ error: 'Terlalu banyak percobaan' });
 
-    const given = Buffer.from(String(req.headers['x-admin-token'] || ''));
-    const real = Buffer.from(String(ADMIN_TOKEN || ''));
-    const ok = real.length > 0 && given.length === real.length && crypto.timingSafeEqual(given, real);
+    const real = Buffer.from(String(process.env.ADMIN_KEY || ''));
+    const given = Buffer.from(String(req.params.key || ''));
+    const ok = real.length >= 16 && given.length === real.length && crypto.timingSafeEqual(given, real);
     if (!ok) {
         f.n++; adminFails.set(ip, f);
-        return res.status(403).json({ error: 'Token salah' });
+        return res.status(404).send('Not found'); // pura-pura tidak ada
     }
-    adminFails.delete(ip);
     next();
 }
 
-// Halaman admin (HTML statis; data tetap butuh token)
-app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'admin.html')));
-
-// Foto KTP
-app.get('/admin/ktp/:file', adminAuth, (req, res) => {
-    const file = path.join(KTP_DIR, path.basename(req.params.file));
-    if (!fs.existsSync(file)) return res.status(404).json({ error: 'Not found' });
-    res.sendFile(file);
+// Halaman (HTML statis)
+app.get('/admin/:key', adminKey, (req, res) => {
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Referrer-Policy', 'no-referrer'); // kunci di URL jangan bocor lewat referrer
+    res.sendFile(path.join(__dirname, 'admin.html'));
 });
 
-// Daftar pendaftar (VA + QRIS), hanya transaksi turnamen catur
-app.get('/admin/registrations', adminAuth, async (req, res) => {
+// Data pendaftar (VA + QRIS), hanya transaksi turnamen catur
+app.get('/admin-data/:key/registrations', adminKey, async (req, res) => {
     try {
         // inquiry_va / inquiry_qris dipakai bersama aplikasi lain → ambil yang punya package_id saja
         const q = col => get(query(ref(databaseFire, col), orderByChild('package_id'), startAt('')));
@@ -135,7 +132,6 @@ app.get('/admin/registrations', adminAuth, async (req, res) => {
                 if (!r || !r.package_id) continue;
                 rows.push({
                     invoice: r.partner_reff || key,
-                    source,
                     status: r.status || 'PENDING',
                     created_at: r.created_at || null,
                     paid_at: r.paid_at || null,
@@ -143,11 +139,9 @@ app.get('/admin/registrations', adminAuth, async (req, res) => {
                     method: source === 'qris' ? 'QRIS' : `VA ${r.bank_code || ''}`.trim(),
                     va_number: r.va_number || null,
                     bank_ref: r.bank_ref || null,
-                    package_id: r.package_id,
                     package_name: r.package_name || r.package_id,
                     phone: r.customer_phone || null,
                     customer_name: r.customer_name || null,
-                    ktp_file: r.ktp_file || null,
                     participants: Array.isArray(r.participants) ? r.participants : []
                 });
             }
@@ -156,9 +150,10 @@ app.get('/admin/registrations', adminAuth, async (req, res) => {
         collect(qr, 'qris');
 
         rows.sort((a, b) => new Date(b.paid_at || b.created_at) - new Date(a.paid_at || a.created_at));
+        res.setHeader('Cache-Control', 'no-store');
         res.json({ generated_at: new Date().toISOString(), rows });
     } catch (err) {
-        console.error('❌ /admin/registrations:', err.message);
+        console.error('❌ /admin-data:', err.message);
         res.status(500).json({ error: 'Gagal mengambil data' });
     }
 });
