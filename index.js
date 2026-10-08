@@ -126,10 +126,14 @@ app.get('/admin/:key', adminKey, (req, res) => {
 });
 
 // Foto KTP, hanya bisa dibuka dengan ADMIN_KEY yang benar
-app.get('/admin/:key/ktp', adminKey, (req, res) => {
+// Foto KTP tanpa admin key (alamat: /ktp?f=NAMAFILE)
+app.get('/ktp', (req, res) => {
     const name = path.basename(String(req.query.f || ''));
     const full = path.join(KTP_DIR, name);
-    if (!name || !fs.existsSync(full)) return res.status(404).send('File tidak ditemukan');
+    if (!name || !fs.existsSync(full)) {
+        console.warn(`⚠️ KTP tidak ditemukan: ${full}`);
+        return res.status(404).send('File tidak ditemukan');
+    }
     res.setHeader('X-Robots-Tag', 'noindex, nofollow');
     res.setHeader('Cache-Control', 'private, no-store');
     res.sendFile(full);
