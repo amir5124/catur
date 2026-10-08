@@ -9,7 +9,7 @@ const path = require('path');
 const multer = require('multer');
 const twilio = require('twilio');
 const { initializeApp } = require('firebase/app');
-const { getDatabase, ref, get, update, set, runTransaction } = require('firebase/database');
+const { getDatabase, ref, get, update, set, runTransaction, query, orderByKey, startAt, endAt } = require('firebase/database');
 
 // ============================================================
 // 🔥 FIREBASE
@@ -29,7 +29,7 @@ const databaseFire = getDatabase(FIREBASE);
 // ⚙️ EXPRESS
 // ============================================================
 const app = express();
-app.set('trust proxy', 1); // setelah `const app`, bukan sebelumnya
+app.set('trust proxy', 1);
 app.use(cors());
 app.use(express.json());
 
@@ -58,20 +58,18 @@ const TWILIO_ADMIN_SID = process.env.TWILIO_ADMIN_CONTENT_SID || "HX105b7c03b6cc
 const BASE_URL = (process.env.PUBLIC_URL || "https://catur.siappgo.id").replace(/\/$/, "");
 const EVENT_NAME = "TURNAMEN CATUR 2026";
 
-
 // ============================================================
-// 📦 PAKET (harga dihitung di server, bukan dari frontend)
-// Mode tes Early Bird: isi EARLY_PRICE=100 di .env (samakan dengan EARLY_PRICE di frontend)
+// 📦 PAKET
 // ============================================================
 const PACKAGES = {
-    early: { label: 'Early Bird + Jersey', price: Number(process.env.EARLY_PRICE) || 100, pax: 1, quota: 50 },
+    early: { label: 'Early Bird + Jersey', price: 150000, pax: 1, quota: 50 },
     reguler: { label: 'Reguler + Jersey', price: 200000, pax: 1, quota: 100 },
     paket5: { label: 'Paket 5 Orang', price: 350000, pax: 5, quota: null },
     nojersey: { label: 'Reguler Tanpa Jersey', price: 150000, pax: 1, quota: null }
 };
 
 // ============================================================
-// 📁 UPLOAD KTP (privat, tidak di-serve publik)
+// 📁 UPLOAD KTP (privat)
 // ============================================================
 const KTP_DIR = path.join(__dirname, 'private_uploads', 'ktp');
 fs.mkdirSync(KTP_DIR, { recursive: true });
@@ -95,12 +93,11 @@ app.post('/upload-ktp', uploadKtp.single('ktp'), (req, res) => {
 });
 
 // ============================================================
-// 🖥️ HALAMAN ADMIN (HTML statis; data dibaca admin.html langsung dari Firebase)
-// Akses: https://catur.siappgo.id/admin/<ADMIN_KEY>   (ADMIN_KEY di .env, min. 16 karakter)
+// 🖥️ ADMIN
 // ============================================================
-const adminFails = new Map(); // ip -> { n, t }
+const adminFails = new Map();
 const ADMIN_KEY = process.env.ADMIN_KEY || "0g6rdM2kOSY9Aq0YzPp1U2SUGVLFXbl3";
-const ADMIN_KEY_MIN = 16; // panjang minimal key
+const ADMIN_KEY_MIN = 16;
 
 function adminKey(req, res, next) {
     const ip = req.ip;
@@ -125,8 +122,7 @@ app.get('/admin/:key', adminKey, (req, res) => {
     res.sendFile(path.join(__dirname, 'admin.html'));
 });
 
-// Foto KTP, hanya bisa dibuka dengan ADMIN_KEY yang benar
-// Foto KTP tanpa admin key (alamat: /ktp?f=NAMAFILE)
+// Foto KTP
 app.get('/ktp', (req, res) => {
     const name = path.basename(String(req.query.f || ''));
     const full = path.join(KTP_DIR, name);
@@ -161,12 +157,11 @@ function makeSignature(pathUrl, parts) {
     return crypto.createHmac("sha256", serverKey).update(pathUrl + 'POST' + cleaned).digest("hex");
 }
 
-// Salinan ringan untuk web admin (tanpa response_raw & gambar QR)
 async function saveRegistry(partner_reff, source, d) {
     try {
         await set(ref(databaseFire, `catur_registrations/${partner_reff}`), {
             partner_reff,
-            source,                                   // 'va' | 'qris'
+            source,
             status: 'PENDING',
             created_at: d.created_at,
             amount: Number(d.amount) || 0,
@@ -180,11 +175,10 @@ async function saveRegistry(partner_reff, source, d) {
             ktp_file: d.ktp_file || null
         });
     } catch (e) {
-        console.error('⚠️ saveRegistry gagal:', e.message); // jangan gagalkan pembayaran
+        console.error('⚠️ saveRegistry gagal:', e.message);
     }
 }
 
-// Validasi + pisahkan data turnamen dari body yang diteruskan ke LinkQu
 async function splitBody(reqBody) {
     const { participants, package_id, package_name, ktp_file, ...rest } = reqBody;
     const pkg = PACKAGES[package_id];
@@ -384,7 +378,6 @@ async function sendWA(to, contentSid, variables) {
     }
 }
 
-// Twilio melarang newline/tab & >4 spasi beruntun di variabel
 const oneLine = s => String(s ?? '-').replace(/[\r\n\t]+/g, ' ').replace(/ {2,}/g, ' ').trim() || '-';
 
 async function addBalance(partner_reff, va_code, serialnumber) {
@@ -393,7 +386,6 @@ async function addBalance(partner_reff, va_code, serialnumber) {
     if (!snap.exists()) throw new Error(`Data ${partner_reff} tidak ditemukan.`);
     const data = snap.val();
 
-    // Hitung kuota paket (callback hanya lolos sekali berkat transaction)
     if (data.package_id) {
         await runTransaction(ref(databaseFire, `catur_quota/${data.package_id}`), n => (n || 0) + 1);
     }
@@ -420,7 +412,7 @@ async function addBalance(partner_reff, va_code, serialnumber) {
 }
 
 // ============================================================
-// ✅ CALLBACK LINKQU (selalu balas 200, proses lanjutan di background)
+// ✅ CALLBACK LINKQU
 // ============================================================
 app.post("/callback", async (req, res) => {
     const { partner_reff, va_code, serialnumber } = req.body;
@@ -428,7 +420,7 @@ app.post("/callback", async (req, res) => {
         const dbPath = va_code === "QRIS" ? `inquiry_qris/${partner_reff}` : `inquiry_va/${partner_reff}`;
         const result = await runTransaction(ref(databaseFire, dbPath), (cur) => {
             if (cur) {
-                if (cur.status === "SUKSES") return; // sudah diproses → batal
+                if (cur.status === "SUKSES") return;
                 cur.status = "SUKSES";
                 return cur;
             }
@@ -437,7 +429,6 @@ app.post("/callback", async (req, res) => {
 
         if (!result.committed) return res.status(200).json({ status: "SUCCESS", message: "Sudah diproses" });
 
-        // Catat waktu bayar + Ref Bank untuk web admin
         update(ref(databaseFire, `catur_registrations/${partner_reff}`), {
             status: 'SUKSES',
             paid_at: new Date().toISOString(),
@@ -488,7 +479,7 @@ app.get('/check-local-status/:partnerReff', async (req, res) => {
 });
 
 // ============================================================
-// 📊 SISA KUOTA (dipakai halaman pendaftaran)
+// 📊 SISA KUOTA
 // ============================================================
 app.get('/catur-quota', async (req, res) => {
     try {
@@ -502,6 +493,108 @@ app.get('/catur-quota', async (req, res) => {
         res.json(out);
     } catch (err) {
         res.status(500).json({ error: err.message });
+    }
+});
+
+// ============================================================
+// 🧹 RESET DATA UJICOBA
+// ------------------------------------------------------------
+// GET  /admin/:key/reset-catur                → SIMULASI (tidak hapus)
+// POST /admin/:key/reset-catur?yes=1          → HAPUS beneran
+// POST /admin/:key/reset-catur?yes=1&before=2026-10-15
+//                                             → hanya hapus transaksi yg dibuat
+//                                               SEBELUM tgl tsb (catur_registrations &
+//                                               catur_quota tetap direset penuh)
+//
+// Yang dihapus:
+//   • inquiry_va / inquiry_qris yg berawalan INV-CATUR- saja (aplikasi lain aman)
+//   • catur_registrations  (semua)
+//   • catur_quota          (direset → Early Bird kembali 50, Reguler 100)
+//   • file KTP di private_uploads/ktp milik transaksi yg dihapus
+// ============================================================
+const RESET_PREFIX = 'INV-CATUR-';
+
+app.all('/admin/:key/reset-catur', adminKey, async (req, res) => {
+    const apply = req.method === 'POST' && (req.query.yes === '1' || req.query.yes === 'true');
+    const beforeArg = String(req.query.before || '').trim();
+    const BEFORE = beforeArg ? new Date(beforeArg + 'T00:00:00+07:00') : null;
+    if (beforeArg && isNaN(BEFORE)) {
+        return res.status(400).json({ error: 'Format before salah. Contoh: before=2026-10-15' });
+    }
+
+    const log = [];
+    const ktpFiles = [];
+    let removedTotal = 0, paidTotal = 0;
+
+    try {
+        // ---- 1. inquiry_va & inquiry_qris ----
+        for (const col of ['inquiry_va', 'inquiry_qris']) {
+            const snap = await get(query(ref(databaseFire, col), orderByKey(), startAt(RESET_PREFIX), endAt(RESET_PREFIX + '\uf8ff')));
+            const all = snap.exists() ? snap.val() : {};
+            const keys = Object.keys(all).filter(k => !BEFORE || new Date(all[k].created_at) < BEFORE);
+            const paid = keys.filter(k => all[k].status === 'SUKSES').length;
+            keys.forEach(k => all[k].ktp_file && ktpFiles.push(all[k].ktp_file));
+
+            log.push({ target: col, akan_dihapus: keys.length, lunas: paid });
+
+            if (apply && keys.length) {
+                await update(ref(databaseFire, col), Object.fromEntries(keys.map(k => [k, null])));
+            }
+            removedTotal += keys.length;
+            paidTotal += paid;
+        }
+
+        // ---- 2. catur_registrations ----
+        const regSnap = await get(ref(databaseFire, 'catur_registrations'));
+        const regCount = regSnap.exists() ? Object.keys(regSnap.val()).length : 0;
+        log.push({ target: 'catur_registrations', akan_dihapus: regCount });
+
+        // ---- 3. catur_quota (preview) ----
+        const quotaSnap = await get(ref(databaseFire, 'catur_quota'));
+        log.push({
+            target: 'catur_quota',
+            saat_ini: quotaSnap.exists() ? quotaSnap.val() : null,
+            setelah_reset: Object.fromEntries(
+                Object.entries(PACKAGES).filter(([, p]) => p.quota).map(([id, p]) => [id, 0])
+            )
+        });
+
+        log.push({ target: 'file_ktp', akan_dihapus: ktpFiles.length });
+
+        if (!apply) {
+            return res.json({
+                mode: 'SIMULASI',
+                catatan: 'Tidak ada data yang dihapus. Kirim POST dengan ?yes=1 untuk benar-benar menghapus.',
+                before: BEFORE ? beforeArg : null,
+                total_transaksi: removedTotal,
+                total_lunas: paidTotal,
+                detail: log
+            });
+        }
+
+        // ---- Eksekusi reset ----
+        await set(ref(databaseFire, 'catur_registrations'), null);
+        await set(ref(databaseFire, 'catur_quota'), null);
+
+        let fileDeleted = 0;
+        for (const f of ktpFiles) {
+            const p = path.join(KTP_DIR, path.basename(f));
+            if (fs.existsSync(p)) { fs.unlinkSync(p); fileDeleted++; }
+        }
+
+        console.log(`🧹 RESET dijalankan: ${removedTotal} transaksi, ${fileDeleted} KTP, kuota direset.`);
+        return res.json({
+            mode: 'HAPUS',
+            before: BEFORE ? beforeArg : null,
+            total_transaksi_dihapus: removedTotal,
+            total_lunas: paidTotal,
+            file_ktp_dihapus: fileDeleted,
+            kuota_direset: true,
+            detail: log
+        });
+    } catch (err) {
+        console.error('❌ Reset gagal:', err.message);
+        return res.status(500).json({ error: err.message });
     }
 });
 
