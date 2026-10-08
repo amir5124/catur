@@ -63,7 +63,7 @@ const EVENT_NAME = "TURNAMEN CATUR 2026";
 // Mode tes Early Bird: isi EARLY_PRICE=100 di .env (samakan dengan EARLY_PRICE di frontend)
 // ============================================================
 const PACKAGES = {
-    early: { label: 'Early Bird + Jersey', price: Number(process.env.EARLY_PRICE) || 150000, pax: 1, quota: 50 },
+    early: { label: 'Early Bird + Jersey', price: Number(process.env.EARLY_PRICE) || 100, pax: 1, quota: 50 },
     reguler: { label: 'Reguler + Jersey', price: 200000, pax: 1, quota: 100 },
     paket5: { label: 'Paket 5 Orang', price: 350000, pax: 5, quota: null },
     nojersey: { label: 'Reguler Tanpa Jersey', price: 150000, pax: 1, quota: null }
