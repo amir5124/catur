@@ -93,29 +93,9 @@ app.post('/upload-ktp', uploadKtp.single('ktp'), (req, res) => {
 });
 
 // ============================================================
-// 🖥️ ADMIN
+// 🖥️ ADMIN (TANPA KEY — akses langsung /admin)
 // ============================================================
-const adminFails = new Map();
-const ADMIN_KEY = process.env.ADMIN_KEY || "0g6rdM2kOSY9Aq0YzPp1U2SUGVLFXbl3";
-const ADMIN_KEY_MIN = 16;
-
-function adminKey(req, res, next) {
-    const ip = req.ip;
-    const f = adminFails.get(ip) || { n: 0, t: Date.now() };
-    if (Date.now() - f.t > 15 * 60 * 1000) { f.n = 0; f.t = Date.now(); }
-    if (f.n >= 10) return res.status(429).send('Terlalu banyak percobaan');
-
-    const real = Buffer.from(ADMIN_KEY);
-    const given = Buffer.from(String(req.params.key || ''));
-    const ok = real.length >= ADMIN_KEY_MIN && given.length === real.length && crypto.timingSafeEqual(given, real);
-    if (!ok) {
-        f.n++; adminFails.set(ip, f);
-        return res.status(404).send('Not found');
-    }
-    next();
-}
-
-app.get('/admin/:key', adminKey, (req, res) => {
+app.get(['/admin', '/admin/'], (req, res) => {
     res.setHeader('X-Robots-Tag', 'noindex, nofollow');
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Referrer-Policy', 'no-referrer');
@@ -497,14 +477,14 @@ app.get('/catur-quota', async (req, res) => {
 });
 
 // ============================================================
-// 🧹 RESET DATA UJICOBA
+// 🧹 RESET DATA UJICOBA (TANPA KEY)
 // ------------------------------------------------------------
-// GET  /admin/:key/reset-catur                → SIMULASI (tidak hapus)
-// POST /admin/:key/reset-catur?yes=1          → HAPUS beneran
-// POST /admin/:key/reset-catur?yes=1&before=2026-10-15
-//                                             → hanya hapus transaksi yg dibuat
-//                                               SEBELUM tgl tsb (catur_registrations &
-//                                               catur_quota tetap direset penuh)
+// GET  /admin/reset-catur                → SIMULASI (tidak hapus)
+// POST /admin/reset-catur?yes=1          → HAPUS beneran
+// POST /admin/reset-catur?yes=1&before=2026-10-15
+//                                        → hanya hapus transaksi yg dibuat
+//                                          SEBELUM tgl tsb (catur_registrations &
+//                                          catur_quota tetap direset penuh)
 //
 // Yang dihapus:
 //   • inquiry_va / inquiry_qris yg berawalan INV-CATUR- saja (aplikasi lain aman)
@@ -514,7 +494,7 @@ app.get('/catur-quota', async (req, res) => {
 // ============================================================
 const RESET_PREFIX = 'INV-CATUR-';
 
-app.all('/admin/:key/reset-catur', adminKey, async (req, res) => {
+app.all(['/admin/reset-catur', '/admin/reset-catur/'], async (req, res) => {
     const apply = req.method === 'POST' && (req.query.yes === '1' || req.query.yes === 'true');
     const beforeArg = String(req.query.before || '').trim();
     const BEFORE = beforeArg ? new Date(beforeArg + 'T00:00:00+07:00') : null;
