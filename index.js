@@ -58,6 +58,7 @@ const TWILIO_ADMIN_SID = process.env.TWILIO_ADMIN_CONTENT_SID || "HX105b7c03b6cc
 const BASE_URL = (process.env.PUBLIC_URL || "https://catur.siappgo.id").replace(/\/$/, "");
 const EVENT_NAME = "TURNAMEN CATUR 2026";
 
+
 // ============================================================
 // 📦 PAKET (harga dihitung di server, bukan dari frontend)
 // Mode tes Early Bird: isi EARLY_PRICE=100 di .env (samakan dengan EARLY_PRICE di frontend)
@@ -98,6 +99,8 @@ app.post('/upload-ktp', uploadKtp.single('ktp'), (req, res) => {
 // Akses: https://catur.siappgo.id/admin/<ADMIN_KEY>   (ADMIN_KEY di .env, min. 16 karakter)
 // ============================================================
 const adminFails = new Map(); // ip -> { n, t }
+const ADMIN_KEY = process.env.ADMIN_KEY || "0g6rdM2kOSY9Aq0YzPp1U2SUGVLFXbl3";
+const ADMIN_KEY_MIN = 16; // panjang minimal key
 
 function adminKey(req, res, next) {
     const ip = req.ip;
@@ -105,9 +108,9 @@ function adminKey(req, res, next) {
     if (Date.now() - f.t > 15 * 60 * 1000) { f.n = 0; f.t = Date.now(); }
     if (f.n >= 10) return res.status(429).send('Terlalu banyak percobaan');
 
-    const real = Buffer.from(String(process.env.ADMIN_KEY || ''));
+    const real = Buffer.from(ADMIN_KEY);
     const given = Buffer.from(String(req.params.key || ''));
-    const ok = real.length >= 16 && given.length === real.length && crypto.timingSafeEqual(given, real);
+    const ok = real.length >= ADMIN_KEY_MIN && given.length === real.length && crypto.timingSafeEqual(given, real);
     if (!ok) {
         f.n++; adminFails.set(ip, f);
         return res.status(404).send('Not found');
@@ -120,6 +123,16 @@ app.get('/admin/:key', adminKey, (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.sendFile(path.join(__dirname, 'admin.html'));
+});
+
+// Foto KTP, hanya bisa dibuka dengan ADMIN_KEY yang benar
+app.get('/admin/:key/ktp', adminKey, (req, res) => {
+    const name = path.basename(String(req.query.f || ''));
+    const full = path.join(KTP_DIR, name);
+    if (!name || !fs.existsSync(full)) return res.status(404).send('File tidak ditemukan');
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.sendFile(full);
 });
 
 // ============================================================
