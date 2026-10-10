@@ -81,10 +81,9 @@ const DEFAULT_PACKAGES = {
 // key format: <package_id>__<category_id>
 // ============================================================
 const DEFAULT_QUOTA_CONFIG = {
-    'early__umum': 50,
-    'early__pelajar': 50,
-    'reguler__umum': 100,
-    'reguler__pelajar': 100
+    'early': 50,
+    'reguler': 100
+    // paket5, nojersey → tanpa kuota
 };
 
 // ============================================================
@@ -144,17 +143,17 @@ async function getPackage(id) {
 // ============================================================
 // HELPER — Kuota (per kategori × paket)
 // ============================================================
-const quotaKey = (pkgId, catId) => `${pkgId}__${catId}`;
+const quotaKey = (pkgId) => pkgId;   // cukup paket
 
-async function getQuotaConfig(pkgId, catId) {
-    const snap = await get(ref(databaseFire, `catur_quota_config/${quotaKey(pkgId, catId)}`));
+async function getQuotaConfig(pkgId) {
+    const snap = await get(ref(databaseFire, `catur_quota_config/${pkgId}`));
     if (!snap.exists()) return null;
     const v = snap.val();
     return v === null || v === '' ? null : Number(v);
 }
 
-async function getQuotaTerisi(pkgId, catId) {
-    const snap = await get(ref(databaseFire, `catur_quota/${quotaKey(pkgId, catId)}`));
+async function getQuotaTerisi(pkgId) {
+    const snap = await get(ref(databaseFire, `catur_quota/${pkgId}`));
     return snap.exists() ? Number(snap.val()) : 0;
 }
 
@@ -275,11 +274,12 @@ async function splitBody(reqBody) {
     if (pax === 1 && !ktp_file) throw new Error('Foto KTP wajib diupload');
 
     // Cek kuota per kombinasi kategori × paket (Opsi A)
-    const quotaMax = await getQuotaConfig(pkg.id, cat.id);
+    // Cek kuota global per paket (Opsi B)
+    const quotaMax = await getQuotaConfig(pkg.id);
     if (quotaMax) {
-        const terisi = await getQuotaTerisi(pkg.id, cat.id);
+        const terisi = await getQuotaTerisi(pkg.id);
         if (terisi >= quotaMax) {
-            throw new Error(`Kuota ${pkg.label} untuk kategori ${cat.label} sudah penuh`);
+            throw new Error(`Kuota ${pkg.label} sudah penuh`);
         }
     }
 
@@ -479,9 +479,10 @@ async function addBalance(partner_reff, va_code, serialnumber) {
     const data = snap.val();
 
     // Increment kuota per kombinasi kategori × paket (Opsi A)
-    if (data.package_id && data.category_id) {
+    // Increment kuota global per paket (Opsi B)
+    if (data.package_id) {
         await runTransaction(
-            ref(databaseFire, `catur_quota/${quotaKey(data.package_id, data.category_id)}`),
+            ref(databaseFire, `catur_quota/${quotaKey(data.package_id)}`),
             n => (n || 0) + 1
         );
     }
@@ -593,18 +594,15 @@ app.get('/catur-packages', async (req, res) => {
 // Response keys: "early__bebas", "early__umum", "early__pelajar", dst.
 app.get('/catur-quota', async (req, res) => {
     try {
-        const [cats, pkgs] = await Promise.all([getCategories(), getPackages()]);
+        const pkgs = await getPackages();
         const configSnap = await get(ref(databaseFire, 'catur_quota_config'));
         const config = configSnap.exists() ? configSnap.val() : DEFAULT_QUOTA_CONFIG;
         const out = {};
-        for (const c of cats) {
-            for (const p of pkgs) {
-                const key = quotaKey(p.id, c.id);
-                const max = config[key];
-                if (!max) continue;
-                const terisi = await getQuotaTerisi(p.id, c.id);
-                out[key] = { quota: Number(max), terisi, sisa: Number(max) - terisi };
-            }
+        for (const p of pkgs) {
+            const max = config[p.id];
+            if (!max) continue;
+            const terisi = await getQuotaTerisi(p.id);
+            out[p.id] = { quota: Number(max), terisi, sisa: Number(max) - terisi };
         }
         res.json(out);
     } catch (err) { res.status(500).json({ error: err.message }); }
@@ -739,26 +737,21 @@ app.delete(['/admin/packages/:id', '/admin/packages/:id/'], async (req, res) => 
 // ============================================================
 app.get(['/admin/quota', '/admin/quota/'], async (req, res) => {
     try {
-        const [cats, pkgs] = await Promise.all([getCategories(), getPackages()]);
+        const pkgs = await getPackages();
         const configSnap = await get(ref(databaseFire, 'catur_quota_config'));
         const config = configSnap.exists() ? configSnap.val() : {};
         const out = [];
-        for (const c of cats) {
-            for (const p of pkgs) {
-                const key = quotaKey(p.id, c.id);
-                const max = config[key] ?? null;
-                const terisi = await getQuotaTerisi(p.id, c.id);
-                out.push({
-                    key,
-                    package_id: p.id,
-                    package_label: p.label,
-                    category_id: c.id,
-                    category_label: c.label,
-                    quota: max === null ? null : Number(max),
-                    terisi,
-                    sisa: max === null ? null : Number(max) - terisi
-                });
-            }
+        for (const p of pkgs) {
+            const max = config[p.id] ?? null;
+            const terisi = await getQuotaTerisi(p.id);
+            out.push({
+                key: p.id,
+                package_id: p.id,
+                package_label: p.label,
+                quota: max === null ? null : Number(max),
+                terisi,
+                sisa: max === null ? null : Number(max) - terisi
+            });
         }
         res.json(out);
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -857,61 +850,43 @@ app.post(['/admin/migrate-bebas-to-umum', '/admin/migrate-bebas-to-umum/'], asyn
 //
 // Setelah migrasi sukses, HAPUS endpoint ini dari kode.
 // ============================================================
-app.post(['/admin/migrate-quota', '/admin/migrate-quota/'], async (req, res) => {
-    if (req.query.yes !== '1') {
-        return res.json({
-            error: 'Tambahkan ?yes=1 untuk eksekusi.',
-            preview_only: true
-        });
-    }
-
+// ============================================================
+// 🔄 MIGRASI OPSI A → OPSI B (kuota per kategori → global per paket)
+// POST /admin/migrate-to-global-quota?yes=1
+// ============================================================
+app.post(['/admin/migrate-to-global-quota', '/admin/migrate-to-global-quota/'], async (req, res) => {
+    if (req.query.yes !== '1') return res.json({ error: 'Tambahkan ?yes=1' });
     try {
-        const oldSnap = await get(ref(databaseFire, 'catur_quota'));
-        const old = oldSnap.exists() ? oldSnap.val() : {};
         const log = [];
 
-        // Mapping paket lama → key baru. Semua diarahkan ke kategori 'bebas'
-        // (karena data lama belum punya info kategori).
-        const oldToNew = {
-            early: 'early__bebas',
-            reguler: 'reguler__bebas',
-            paket5: null,   // tidak ada kuota → skip
-            nojersey: null
-        };
+        // Baca counter lama (per kategori × paket)
+        const oldSnap = await get(ref(databaseFire, 'catur_quota'));
+        const old = oldSnap.exists() ? oldSnap.val() : {};
 
+        // Gabung: <pkg>__<cat> → <pkg> (sum semua kategori)
         const newQuota = {};
-
-        for (const [oldKey, value] of Object.entries(old)) {
-            // Kalau oldKey sudah format baru (early__umum), biarkan
-            if (oldKey.includes('__')) {
-                newQuota[oldKey] = Number(value) || 0;
-                log.push({ oldKey, value, aksi: 'sudah format baru, dipertahankan' });
-                continue;
+        for (const [key, value] of Object.entries(old)) {
+            const n = Number(value) || 0;
+            if (key.includes('__')) {
+                const pkgId = key.split('__')[0];
+                newQuota[pkgId] = (newQuota[pkgId] || 0) + n;
+                log.push({ from: key, value: n, to: pkgId, aksi: 'digabung' });
+            } else {
+                // sudah format baru
+                newQuota[key] = (newQuota[key] || 0) + n;
+                log.push({ key, value: n, aksi: 'dipertahankan' });
             }
-            const newKey = oldToNew[oldKey];
-            if (!newKey) {
-                log.push({ oldKey, value, aksi: 'diabaikan (tidak ada kuota)' });
-                continue;
-            }
-            newQuota[newKey] = Number(value) || 0;
-            log.push({ oldKey, value, newKey, aksi: 'dipindah' });
         }
 
-        // Tulis catur_quota versi baru
         await set(ref(databaseFire, 'catur_quota'), newQuota);
+        log.push({ target: 'catur_quota', aksi: 'reset ke format Opsi B', quota_baru: newQuota });
 
-        // Pastikan catur_quota_config punya 6 kombinasi
-        const cfgSnap = await get(ref(databaseFire, 'catur_quota_config'));
-        if (!cfgSnap.exists()) {
-            await set(ref(databaseFire, 'catur_quota_config'), DEFAULT_QUOTA_CONFIG);
-            log.push({ aksi: 'seed catur_quota_config default (Opsi A)' });
-        } else {
-            await update(ref(databaseFire, 'catur_quota_config'), DEFAULT_QUOTA_CONFIG);
-            log.push({ aksi: 'update catur_quota_config dengan default Opsi A' });
-        }
+        // Reset config kuota ke Opsi B (per paket)
+        await set(ref(databaseFire, 'catur_quota_config'), DEFAULT_QUOTA_CONFIG);
+        log.push({ target: 'catur_quota_config', aksi: 'reset ke 2 paket (early: 50, reguler: 100)' });
 
-        console.log('✅ Migrasi kuota selesai:', JSON.stringify(newQuota));
-        res.json({ ok: true, migrated: newQuota, log });
+        console.log('✅ Migrasi Opsi A → Opsi B selesai');
+        res.json({ ok: true, quota_baru: newQuota, log });
     } catch (e) {
         console.error('❌ Migrasi gagal:', e.message);
         res.status(500).json({ error: e.message });
