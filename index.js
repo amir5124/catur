@@ -62,9 +62,8 @@ const EVENT_NAME = "TURNAMEN CATUR 2026";
 // 🏷️ KATEGORI — default
 // ============================================================
 const DEFAULT_CATEGORIES = {
-    bebas: { id: 'bebas', label: 'Bebas', desc: 'Bebas tanpa batasan usia/status', active: true, order: 1 },
-    umum: { id: 'umum', label: 'Umum', desc: 'Dewasa, siswa SMA, Mahasiswa', active: true, order: 2 },
-    pelajar: { id: 'pelajar', label: 'Pelajar', desc: 'Siswa SD dan SMP', active: true, order: 3 }
+    umum: { id: 'umum', label: 'Umum', desc: 'Dewasa, siswa SMA, Mahasiswa', active: true, order: 1 },
+    pelajar: { id: 'pelajar', label: 'Pelajar', desc: 'Siswa SD dan SMP', active: true, order: 2 }
 };
 
 // ============================================================
@@ -82,17 +81,10 @@ const DEFAULT_PACKAGES = {
 // key format: <package_id>__<category_id>
 // ============================================================
 const DEFAULT_QUOTA_CONFIG = {
-    // Early Bird — 50 per kategori (Bebas + Umum + Pelajar)
-    'early__bebas': 50,
     'early__umum': 50,
     'early__pelajar': 50,
-
-    // Reguler — 100 per kategori
-    'reguler__bebas': 100,
     'reguler__umum': 100,
     'reguler__pelajar': 100
-
-    // Paket 5 & Tanpa Jersey → unlimited (tidak dihitung)
 };
 
 // ============================================================
@@ -794,6 +786,64 @@ app.delete(['/admin/quota/:key', '/admin/quota/:key/'], async (req, res) => {
         await set(ref(databaseFire, `catur_quota_config/${key}`), null);
         res.json({ ok: true, deleted: key });
     } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ============================================================
+// 🔄 MIGRASI 2: bebas → umum (karena ternyata bebas == umum)
+// POST /admin/migrate-bebas-to-umum?yes=1
+// ============================================================
+app.post(['/admin/migrate-bebas-to-umum', '/admin/migrate-bebas-to-umum/'], async (req, res) => {
+    if (req.query.yes !== '1') return res.json({ error: 'Tambahkan ?yes=1' });
+    try {
+        const log = [];
+        const oldSnap = await get(ref(databaseFire, 'catur_quota'));
+        const old = oldSnap.exists() ? oldSnap.val() : {};
+
+        // Pindah *__bebas → *__umum
+        const newQuota = { ...old };
+
+        for (const key of Object.keys(old)) {
+            if (!key.includes('__bebas')) continue;
+            const newKey = key.replace('__bebas', '__umum');
+            const oldVal = Number(old[key]) || 0;
+            const curVal = Number(newQuota[newKey] || 0);
+            newQuota[newKey] = curVal + oldVal;
+            delete newQuota[key];
+            log.push({ from: key, value: oldVal, to: newKey, total: newQuota[newKey], aksi: 'digabung' });
+        }
+
+        await set(ref(databaseFire, 'catur_quota'), newQuota);
+
+        // Update kategori & quota config ke default baru
+        await set(ref(databaseFire, 'catur_categories'), DEFAULT_CATEGORIES);
+        await set(ref(databaseFire, 'catur_quota_config'), DEFAULT_QUOTA_CONFIG);
+        log.push({ target: 'catur_categories', aksi: 'reset ke 2 kategori (umum, pelajar)' });
+        log.push({ target: 'catur_quota_config', aksi: 'reset ke 4 kombinasi (Opsi A tanpa bebas)' });
+
+        // Update registrations lama: kalau ada category_id 'bebas', ubah ke 'umum'
+        const regSnap = await get(ref(databaseFire, 'catur_registrations'));
+        if (regSnap.exists()) {
+            const regs = regSnap.val();
+            const updates = {};
+            for (const [id, r] of Object.entries(regs)) {
+                if (r.category_id === 'bebas') {
+                    updates[`${id}/category_id`] = 'umum';
+                    updates[`${id}/category_label`] = 'Umum';
+                    log.push({ registration: id, aksi: 'category_id bebas → umum' });
+                }
+            }
+            if (Object.keys(updates).length) {
+                await update(ref(databaseFire, 'catur_registrations'), updates);
+                log.push({ total_registrations_updated: Object.keys(updates).length / 2 });
+            }
+        }
+
+        console.log('✅ Migrasi bebas → umum selesai');
+        res.json({ ok: true, quota_baru: newQuota, log });
+    } catch (e) {
+        console.error('❌ Migrasi gagal:', e.message);
+        res.status(500).json({ error: e.message });
+    }
 });
 
 // ============================================================
