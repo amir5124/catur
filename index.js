@@ -1,4 +1,4 @@
-require('dotenv').config({ path: require('path').join(__dirname, '.env') }); // HARUS paling atas
+require('dotenv').config({ path: require('path').join(__dirname, '.env') });
 const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
@@ -59,42 +59,63 @@ const BASE_URL = (process.env.PUBLIC_URL || "https://catur.siappgo.id").replace(
 const EVENT_NAME = "TURNAMEN CATUR 2026";
 
 // ============================================================
-// 📦 KATEGORI — DEFAULT (di-seed ke Firebase sekali saja)
-// Disimpan di RTDB: catur_categories/<id>
-// Bisa di-CRUD dari admin tanpa restart server.
+// 🏷️ KATEGORI — default (kelas peserta)
 // ============================================================
 const DEFAULT_CATEGORIES = {
-    early: { id: 'early', label: 'Early Bird + Jersey', price: 150000, pax: 1, quota: 50, active: true, order: 1 },
-    reguler: { id: 'reguler', label: 'Reguler + Jersey', price: 200000, pax: 1, quota: 100, active: true, order: 2 },
-    umum: { id: 'umum', label: 'Umum + Jersey', price: 200000, pax: 1, quota: null, active: true, order: 3 },
-    pelajar: { id: 'pelajar', label: 'Pelajar + Jersey', price: 200000, pax: 1, quota: null, active: true, order: 4 },
-    paket5: { id: 'paket5', label: 'Paket 5 Orang', price: 350000, pax: 5, quota: null, active: true, order: 5 },
-    nojersey: { id: 'nojersey', label: 'Reguler Tanpa Jersey', price: 150000, pax: 1, quota: null, active: true, order: 6 }
+    umum: { id: 'umum', label: 'Umum', active: true, order: 1 },
+    pelajar: { id: 'pelajar', label: 'Pelajar', active: true, order: 2 }
 };
 
-// Seed kategori default sekali kalau belum ada
-async function ensureCategoriesSeeded() {
-    try {
-        const snap = await get(ref(databaseFire, 'catur_categories'));
-        if (!snap.exists()) {
-            await set(ref(databaseFire, 'catur_categories'), DEFAULT_CATEGORIES);
-            console.log('✅ Kategori default di-seed ke Firebase');
-        }
-    } catch (e) { console.error('⚠️ Seed kategori gagal:', e.message); }
-}
-ensureCategoriesSeeded();
+// ============================================================
+// 📦 PAKET — default (bentuk pembelian)
+// ============================================================
+const DEFAULT_PACKAGES = {
+    early: { id: 'early', label: 'Early Bird + Jersey', price: 150000, pax: 1, quota: 50, active: true, order: 1 },
+    reguler: { id: 'reguler', label: 'Reguler + Jersey', price: 200000, pax: 1, quota: 100, active: true, order: 2 },
+    paket5: { id: 'paket5', label: 'Paket 5 Orang', price: 350000, pax: 5, quota: null, active: true, order: 3 },
+    nojersey: { id: 'nojersey', label: 'Reguler Tanpa Jersey', price: 150000, pax: 1, quota: null, active: true, order: 4 }
+};
 
-// Helper: ambil semua kategori (sorted by order)
+// Seed sekali kalau belum ada
+async function ensureSeeded() {
+    try {
+        const [sc, sp] = await Promise.all([
+            get(ref(databaseFire, 'catur_categories')),
+            get(ref(databaseFire, 'catur_packages'))
+        ]);
+        if (!sc.exists()) {
+            await set(ref(databaseFire, 'catur_categories'), DEFAULT_CATEGORIES);
+            console.log('✅ Kategori default di-seed');
+        }
+        if (!sp.exists()) {
+            await set(ref(databaseFire, 'catur_packages'), DEFAULT_PACKAGES);
+            console.log('✅ Paket default di-seed');
+        }
+    } catch (e) { console.error('⚠️ Seed gagal:', e.message); }
+}
+ensureSeeded();
+
+// Helper kategori
 async function getCategories() {
     const snap = await get(ref(databaseFire, 'catur_categories'));
     const all = snap.exists() ? snap.val() : DEFAULT_CATEGORIES;
     return Object.values(all).sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
 }
-
-// Helper: ambil 1 kategori by id
 async function getCategory(id) {
     if (!id) return null;
     const snap = await get(ref(databaseFire, `catur_categories/${id}`));
+    return snap.exists() ? snap.val() : null;
+}
+
+// Helper paket
+async function getPackages() {
+    const snap = await get(ref(databaseFire, 'catur_packages'));
+    const all = snap.exists() ? snap.val() : DEFAULT_PACKAGES;
+    return Object.values(all).sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
+}
+async function getPackage(id) {
+    if (!id) return null;
+    const snap = await get(ref(databaseFire, `catur_packages/${id}`));
     return snap.exists() ? snap.val() : null;
 }
 
@@ -123,7 +144,7 @@ app.post('/upload-ktp', uploadKtp.single('ktp'), (req, res) => {
 });
 
 // ============================================================
-// 🖥️ ADMIN (tanpa key)
+// 🖥️ ADMIN
 // ============================================================
 app.get(['/admin', '/admin/'], (req, res) => {
     res.setHeader('X-Robots-Tag', 'noindex, nofollow');
@@ -147,7 +168,7 @@ app.get('/ktp', (req, res) => {
 
 // robots.txt
 app.get('/robots.txt', (req, res) => {
-    res.type('text/plain').send("User-agent: *\nDisallow: /admin\nDisallow: /ktp\nDisallow: /admin/categories\nDisallow: /admin/reset-catur\n");
+    res.type('text/plain').send("User-agent: *\nDisallow: /admin\nDisallow: /ktp\nDisallow: /admin/categories\nDisallow: /admin/packages\nDisallow: /admin/reset-catur\n");
 });
 
 // ============================================================
@@ -182,9 +203,11 @@ async function saveRegistry(partner_reff, source, d) {
             amount: Number(d.amount) || 0,
             method: source === 'qris' ? 'QRIS' : `VA ${d.bank_code || ''}`.trim(),
             va_number: d.va_number || null,
-            category_id: d.category_id || d.package_id || null,
-            package_id: d.package_id || d.category_id || null,
-            package_name: d.package_name || d.category_label || null,
+            category_id: d.category_id || null,
+            category_label: d.category_label || null,
+            package_id: d.package_id || null,
+            package_name: d.package_name || null,
+            combo_label: d.combo_label || null,
             phone: d.customer_phone || null,
             customer_name: d.customer_name || null,
             participants: d.participants || [],
@@ -195,34 +218,41 @@ async function saveRegistry(partner_reff, source, d) {
     }
 }
 
-// Validasi: terima category_id (baru) ATAU package_id (lama)
+// Validasi: butuh kategori + paket
 async function splitBody(reqBody) {
-    const { participants, category_id, package_id, package_name, ktp_file, ...rest } = reqBody;
+    const { participants, category_id, package_id, ktp_file, ...rest } = reqBody;
 
-    const catId = category_id || package_id;
-    const cat = await getCategory(catId);
+    if (!category_id) throw new Error('Kategori wajib dipilih');
+    if (!package_id) throw new Error('Paket wajib dipilih');
+
+    const [cat, pkg] = await Promise.all([getCategory(category_id), getPackage(package_id)]);
     if (!cat) throw new Error('Kategori tidak valid');
+    if (!pkg) throw new Error('Paket tidak valid');
     if (cat.active === false) throw new Error('Kategori sudah tidak aktif');
+    if (pkg.active === false) throw new Error('Paket sudah tidak aktif');
 
-    const pax = Number(cat.pax) || 1;
+    const pax = Number(pkg.pax) || 1;
     const list = Array.isArray(participants) ? participants : [];
-    if (list.length !== pax) throw new Error('Jumlah peserta tidak sesuai kategori');
+    if (list.length !== pax) throw new Error('Jumlah peserta tidak sesuai paket');
     if (list.some(p => !p.name || !/^\d{16}$/.test(String(p.nik)))) throw new Error('Data peserta/NIK tidak valid');
     if (new Set(list.map(p => String(p.nik))).size !== list.length) throw new Error('NIK ganda dalam satu pendaftaran');
     if (pax === 1 && !ktp_file) throw new Error('Foto KTP wajib diupload');
 
-    if (cat.quota) {
-        const snap = await get(ref(databaseFire, `catur_quota/${catId}`));
-        if ((snap.exists() ? snap.val() : 0) >= cat.quota) throw new Error(`Kuota ${cat.label} sudah penuh`);
+    if (pkg.quota) {
+        const snap = await get(ref(databaseFire, `catur_quota/${package_id}`));
+        if ((snap.exists() ? snap.val() : 0) >= pkg.quota) throw new Error(`Kuota ${pkg.label} sudah penuh`);
     }
 
+    const comboLabel = `${pkg.label} — ${cat.label}`;
+
     return {
-        rest: { ...rest, amount: Number(cat.price), name: EVENT_NAME, pax: String(pax) },
+        rest: { ...rest, amount: Number(pkg.price), name: EVENT_NAME, pax: String(pax) },
         meta: {
-            category_id: catId,
-            package_id: catId,               // alias untuk kompat dashboard lama
-            package_name: cat.label,
+            category_id: cat.id,
             category_label: cat.label,
+            package_id: pkg.id,
+            package_name: pkg.label,
+            combo_label: comboLabel,
             participants: list.map(p => ({ name: String(p.name).trim(), nik: String(p.nik) })),
             ktp_file: ktp_file ? path.basename(String(ktp_file)) : null
         }
@@ -376,7 +406,7 @@ app.get('/download-qr/:partner_reff', async (req, res) => {
 });
 
 // ============================================================
-// 📱 WHATSAPP (TWILIO)
+// 📱 WHATSAPP
 // ============================================================
 function formatToWhatsAppNumber(n) {
     if (typeof n !== 'string') return null;
@@ -409,10 +439,8 @@ async function addBalance(partner_reff, va_code, serialnumber) {
     if (!snap.exists()) throw new Error(`Data ${partner_reff} tidak ditemukan.`);
     const data = snap.val();
 
-    // Increment kuota kategori (kalau kategori punya quota)
-    const catId = data.category_id || data.package_id;
-    if (catId) {
-        await runTransaction(ref(databaseFire, `catur_quota/${catId}`), n => (n || 0) + 1);
+    if (data.package_id) {
+        await runTransaction(ref(databaseFire, `catur_quota/${data.package_id}`), n => (n || 0) + 1);
     }
 
     const peserta = (data.participants || [])
@@ -425,7 +453,7 @@ async function addBalance(partner_reff, va_code, serialnumber) {
         "3": `Rp${parseInt(data.amount).toLocaleString('id-ID')}`,
         "4": oneLine(va_code === 'QRIS' ? 'QRIS' : `VA ${va_code}`),
         "5": oneLine(serialnumber),
-        "6": oneLine(data.package_name || data.category_label),
+        "6": oneLine(data.combo_label || `${data.package_name || '-'} — ${data.category_label || '-'}`),
         "7": oneLine(peserta),
         "8": oneLine(data.customer_phone)
     };
@@ -504,75 +532,60 @@ app.get('/check-local-status/:partnerReff', async (req, res) => {
 });
 
 // ============================================================
-// 📋 DAFTAR KATEGORI (publik, untuk halaman pendaftaran)
+// 📋 PUBLIK — daftar kategori & paket + kuota
 // ============================================================
 app.get('/catur-categories', async (req, res) => {
     try {
         const cats = await getCategories();
         res.json(cats.filter(c => c.active !== false));
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ============================================================
-// 📊 SISA KUOTA
-// ============================================================
+app.get('/catur-packages', async (req, res) => {
+    try {
+        const pkgs = await getPackages();
+        res.json(pkgs.filter(p => p.active !== false));
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.get('/catur-quota', async (req, res) => {
     try {
-        const cats = await getCategories();
+        const pkgs = await getPackages();
         const out = {};
-        for (const c of cats) {
-            if (!c.quota) continue;
-            const s = await get(ref(databaseFire, `catur_quota/${c.id}`));
+        for (const p of pkgs) {
+            if (!p.quota) continue;
+            const s = await get(ref(databaseFire, `catur_quota/${p.id}`));
             const terisi = s.exists() ? s.val() : 0;
-            out[c.id] = { quota: c.quota, terisi, sisa: c.quota - terisi };
+            out[p.id] = { quota: p.quota, terisi, sisa: p.quota - terisi };
         }
         res.json(out);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ============================================================
-// 🏷️ CRUD KATEGORI (dipakai admin)
-// ------------------------------------------------------------
-// GET    /admin/categories       → list semua (termasuk non-aktif)
-// POST   /admin/categories       → tambah { id?, label, price, pax, quota, active, order }
-// PUT    /admin/categories/:id   → update
-// DELETE /admin/categories/:id   → hapus (+ hapus catur_quota/<id>)
+// 🏷️ CRUD KATEGORI
 // ============================================================
-
-// Helper slug
 const toSlug = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
 
 app.get(['/admin/categories', '/admin/categories/'], async (req, res) => {
     try {
         const snap = await get(ref(databaseFire, 'catur_categories'));
         const all = snap.exists() ? snap.val() : DEFAULT_CATEGORIES;
-        const arr = Object.values(all).sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
-        res.json(arr);
+        res.json(Object.values(all).sort((a, b) => (a.order ?? 999) - (b.order ?? 999)));
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post(['/admin/categories', '/admin/categories/'], async (req, res) => {
     try {
-        const { id, label, price, pax, quota, active, order } = req.body || {};
-        if (!label || typeof label !== 'string') return res.status(400).json({ error: 'label wajib' });
-        if (!Number.isFinite(Number(price)) || Number(price) <= 0) return res.status(400).json({ error: 'price wajib > 0' });
-
+        const { id, label, active, order } = req.body || {};
+        if (!label) return res.status(400).json({ error: 'label wajib' });
         const slug = toSlug(id || label);
-        if (!slug) return res.status(400).json({ error: 'id/label tidak valid' });
-
-        const existing = await getCategory(slug);
-        if (existing) return res.status(409).json({ error: `Kategori "${slug}" sudah ada` });
+        if (!slug) return res.status(400).json({ error: 'id tidak valid' });
+        if (await getCategory(slug)) return res.status(409).json({ error: `Kategori "${slug}" sudah ada` });
 
         const cat = {
             id: slug,
             label: String(label).trim(),
-            price: Number(price),
-            pax: Number(pax) || 1,
-            quota: quota === null || quota === '' || quota === undefined ? null : Number(quota),
             active: active !== false,
             order: Number(order) || Date.now()
         };
@@ -586,7 +599,64 @@ app.put(['/admin/categories/:id', '/admin/categories/:id/'], async (req, res) =>
         const id = req.params.id;
         const cur = await getCategory(id);
         if (!cur) return res.status(404).json({ error: 'Kategori tidak ditemukan' });
+        const { label, active, order } = req.body || {};
+        const upd = {};
+        if (label !== undefined) upd.label = String(label).trim();
+        if (active !== undefined) upd.active = !!active;
+        if (order !== undefined) upd.order = Number(order) || cur.order;
+        await update(ref(databaseFire, `catur_categories/${id}`), upd);
+        res.json({ ...cur, ...upd });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
+app.delete(['/admin/categories/:id', '/admin/categories/:id/'], async (req, res) => {
+    try {
+        const id = req.params.id;
+        if (!await getCategory(id)) return res.status(404).json({ error: 'Kategori tidak ditemukan' });
+        await set(ref(databaseFire, `catur_categories/${id}`), null);
+        res.json({ ok: true, deleted: id });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ============================================================
+// 📦 CRUD PAKET
+// ============================================================
+app.get(['/admin/packages', '/admin/packages/'], async (req, res) => {
+    try {
+        const snap = await get(ref(databaseFire, 'catur_packages'));
+        const all = snap.exists() ? snap.val() : DEFAULT_PACKAGES;
+        res.json(Object.values(all).sort((a, b) => (a.order ?? 999) - (b.order ?? 999)));
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post(['/admin/packages', '/admin/packages/'], async (req, res) => {
+    try {
+        const { id, label, price, pax, quota, active, order } = req.body || {};
+        if (!label) return res.status(400).json({ error: 'label wajib' });
+        if (!Number.isFinite(Number(price)) || Number(price) <= 0) return res.status(400).json({ error: 'price wajib > 0' });
+        const slug = toSlug(id || label);
+        if (!slug) return res.status(400).json({ error: 'id tidak valid' });
+        if (await getPackage(slug)) return res.status(409).json({ error: `Paket "${slug}" sudah ada` });
+
+        const pkg = {
+            id: slug,
+            label: String(label).trim(),
+            price: Number(price),
+            pax: Number(pax) || 1,
+            quota: quota === null || quota === '' || quota === undefined ? null : Number(quota),
+            active: active !== false,
+            order: Number(order) || Date.now()
+        };
+        await set(ref(databaseFire, `catur_packages/${slug}`), pkg);
+        res.json(pkg);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put(['/admin/packages/:id', '/admin/packages/:id/'], async (req, res) => {
+    try {
+        const id = req.params.id;
+        const cur = await getPackage(id);
+        if (!cur) return res.status(404).json({ error: 'Paket tidak ditemukan' });
         const { label, price, pax, quota, active, order } = req.body || {};
         const upd = {};
         if (label !== undefined) upd.label = String(label).trim();
@@ -598,47 +668,35 @@ app.put(['/admin/categories/:id', '/admin/categories/:id/'], async (req, res) =>
         if (quota !== undefined) upd.quota = quota === null || quota === '' ? null : Number(quota);
         if (active !== undefined) upd.active = !!active;
         if (order !== undefined) upd.order = Number(order) || cur.order;
-
-        await update(ref(databaseFire, `catur_categories/${id}`), upd);
+        await update(ref(databaseFire, `catur_packages/${id}`), upd);
         res.json({ ...cur, ...upd });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.delete(['/admin/categories/:id', '/admin/categories/:id/'], async (req, res) => {
+app.delete(['/admin/packages/:id', '/admin/packages/:id/'], async (req, res) => {
     try {
         const id = req.params.id;
-        const cur = await getCategory(id);
-        if (!cur) return res.status(404).json({ error: 'Kategori tidak ditemukan' });
-        await set(ref(databaseFire, `catur_categories/${id}`), null);
+        if (!await getPackage(id)) return res.status(404).json({ error: 'Paket tidak ditemukan' });
+        await set(ref(databaseFire, `catur_packages/${id}`), null);
         await set(ref(databaseFire, `catur_quota/${id}`), null);
         res.json({ ok: true, deleted: id });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ============================================================
-// 🧹 RESET DATA UJICOBA (TANPA KEY)
+// 🧹 RESET DATA UJICOBA
 // ------------------------------------------------------------
-// GET  /admin/reset-catur                → SIMULASI (tidak hapus)
-// POST /admin/reset-catur?yes=1          → HAPUS beneran
+// GET  /admin/reset-catur                      → SIMULASI
+// POST /admin/reset-catur?yes=1                → HAPUS beneran
 // POST /admin/reset-catur?yes=1&before=2026-10-15
-//                                        → hanya hapus transaksi sebelum tgl tsb
-// POST /admin/reset-catur?yes=1&resetCategories=1
-//                                        → sekalian reset kategori ke default
-//
-// Yang dihapus (default):
-//   • inquiry_va / inquiry_qris yg berawalan INV-CATUR- saja
-//   • catur_registrations  (semua)
-//   • catur_quota          (direset — kuota semua kategori kembali penuh)
-//   • file KTP di private_uploads/ktp milik transaksi yg dihapus
-//
-// Catatan: catur_categories TIDAK dihapus (kategori = konfigurasi).
-//          Kecuali pakai &resetCategories=1.
+// POST /admin/reset-catur?yes=1&resetCategories=1&resetPackages=1
 // ============================================================
 const RESET_PREFIX = 'INV-CATUR-';
 
 app.all(['/admin/reset-catur', '/admin/reset-catur/'], async (req, res) => {
     const apply = req.method === 'POST' && (req.query.yes === '1' || req.query.yes === 'true');
-    const resetCategories = req.query.resetCategories === '1' || req.query.resetCategories === 'true';
+    const resetCats = req.query.resetCategories === '1' || req.query.resetCategories === 'true';
+    const resetPkgs = req.query.resetPackages === '1' || req.query.resetPackages === 'true';
     const beforeArg = String(req.query.before || '').trim();
     const BEFORE = beforeArg ? new Date(beforeArg + 'T00:00:00+07:00') : null;
     if (beforeArg && isNaN(BEFORE)) {
@@ -650,7 +708,6 @@ app.all(['/admin/reset-catur', '/admin/reset-catur/'], async (req, res) => {
     let removedTotal = 0, paidTotal = 0;
 
     try {
-        // ---- 1. inquiry_va & inquiry_qris ----
         for (const col of ['inquiry_va', 'inquiry_qris']) {
             const snap = await get(query(ref(databaseFire, col), orderByKey(), startAt(RESET_PREFIX), endAt(RESET_PREFIX + '\uf8ff')));
             const all = snap.exists() ? snap.val() : {};
@@ -667,47 +724,39 @@ app.all(['/admin/reset-catur', '/admin/reset-catur/'], async (req, res) => {
             paidTotal += paid;
         }
 
-        // ---- 2. catur_registrations ----
         const regSnap = await get(ref(databaseFire, 'catur_registrations'));
         const regCount = regSnap.exists() ? Object.keys(regSnap.val()).length : 0;
         log.push({ target: 'catur_registrations', akan_dihapus: regCount });
 
-        // ---- 3. catur_quota (preview) ----
-        const cats = await getCategories();
+        const pkgs = await getPackages();
         const quotaSnap = await get(ref(databaseFire, 'catur_quota'));
         log.push({
             target: 'catur_quota',
             saat_ini: quotaSnap.exists() ? quotaSnap.val() : null,
-            setelah_reset: Object.fromEntries(
-                cats.filter(c => c.quota).map(c => [c.id, 0])
-            )
+            setelah_reset: Object.fromEntries(pkgs.filter(p => p.quota).map(p => [p.id, 0]))
         });
 
         log.push({ target: 'file_ktp', akan_dihapus: ktpFiles.length });
-
-        if (resetCategories) {
-            log.push({ target: 'catur_categories', aksi: 'reset ke DEFAULT_CATEGORIES' });
-        }
+        if (resetCats) log.push({ target: 'catur_categories', aksi: 'reset ke default' });
+        if (resetPkgs) log.push({ target: 'catur_packages', aksi: 'reset ke default' });
 
         if (!apply) {
             return res.json({
                 mode: 'SIMULASI',
                 catatan: 'Tidak ada data yang dihapus. Kirim POST dengan ?yes=1 untuk benar-benar menghapus.',
                 before: BEFORE ? beforeArg : null,
-                reset_categories: resetCategories,
+                reset_categories: resetCats,
+                reset_packages: resetPkgs,
                 total_transaksi: removedTotal,
                 total_lunas: paidTotal,
                 detail: log
             });
         }
 
-        // ---- Eksekusi reset ----
         await set(ref(databaseFire, 'catur_registrations'), null);
         await set(ref(databaseFire, 'catur_quota'), null);
-
-        if (resetCategories) {
-            await set(ref(databaseFire, 'catur_categories'), DEFAULT_CATEGORIES);
-        }
+        if (resetCats) await set(ref(databaseFire, 'catur_categories'), DEFAULT_CATEGORIES);
+        if (resetPkgs) await set(ref(databaseFire, 'catur_packages'), DEFAULT_PACKAGES);
 
         let fileDeleted = 0;
         for (const f of ktpFiles) {
@@ -715,11 +764,12 @@ app.all(['/admin/reset-catur', '/admin/reset-catur/'], async (req, res) => {
             if (fs.existsSync(p)) { fs.unlinkSync(p); fileDeleted++; }
         }
 
-        console.log(`🧹 RESET dijalankan: ${removedTotal} transaksi, ${fileDeleted} KTP, kuota direset.${resetCategories ? ' Kategori direset ke default.' : ''}`);
+        console.log(`🧹 RESET: ${removedTotal} transaksi, ${fileDeleted} KTP${resetCats ? ', kategori reset' : ''}${resetPkgs ? ', paket reset' : ''}`);
         return res.json({
             mode: 'HAPUS',
             before: BEFORE ? beforeArg : null,
-            reset_categories: resetCategories,
+            reset_categories: resetCats,
+            reset_packages: resetPkgs,
             total_transaksi_dihapus: removedTotal,
             total_lunas: paidTotal,
             file_ktp_dihapus: fileDeleted,
